@@ -2,7 +2,7 @@
 
 The first release slice provides health, plan catalog, customer sign-in, session bootstrap, and sign-out. The backend is a standalone Vercel project. Use Node.js 22 and a separate staging portal, API, Okta app, and database for integration testing.
 
-## Google and Okta
+## Google and Oktas
 
 1. Create or select a Google Cloud project. Configure the OAuth consent screen for an **External** audience and add test users while it is in testing mode. Create a **Web application** OAuth client. Add the redirect URI shown in Okta's Google social login guide, typically `https://YOUR_OKTA_DOMAIN/oauth2/v1/authorize/callback`. Use your actual Okta domain and follow Okta's custom-domain instructions if applicable.
 2. In Okta Admin Console, go to **Security → Identity Providers** and add **Google**. Enter the Google client ID and secret in Okta. Enable just-in-time provisioning for new users, restrict provisioning to the intended customer population, and keep automatic linking to existing identities disabled unless you have explicitly reviewed the linking policy. Copy the Google identity provider ID into `OKTA_GOOGLE_IDP_ID`.
