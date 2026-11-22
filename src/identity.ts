@@ -4,6 +4,7 @@ import { and, eq, gt, sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/tidb-serverless'
 import * as oidc from 'oauth4webapi'
 import { readCookie, sessionCookie, type Identity } from './app.ts'
+import { portalDestination } from './persona.ts'
 import { accounts, loginAttempts, sessions } from './db/schema.ts'
 
 const attemptCookie = '__Host-sharewifiqr_login'
@@ -20,6 +21,7 @@ export function createIdentity(env: NodeJS.ProcessEnv, portalOrigin: string): Id
   const { TIDB_URL, API_ORIGIN, OKTA_ISSUER, OKTA_CLIENT_ID, OKTA_CLIENT_SECRET, OKTA_GOOGLE_IDP_ID } = env
   if (!TIDB_URL || !API_ORIGIN || !OKTA_ISSUER || !OKTA_CLIENT_ID || !OKTA_CLIENT_SECRET || !OKTA_GOOGLE_IDP_ID) return
 
+  const adminSignInEnabled = env.OKTA_ADMIN_SIGN_IN_ENABLED === 'true'
   const db = drizzle({ client: connect({ url: TIDB_URL }) })
   const callbackUrl = new URL('/v1/auth/callback', API_ORIGIN).href
   const issuer = new URL(OKTA_ISSUER)
@@ -36,7 +38,7 @@ export function createIdentity(env: NodeJS.ProcessEnv, portalOrigin: string): Id
   const failedLogin = () => new Response(null, {
     status: 303,
     headers: {
-      Location: new URL('/customer/sign-in?error=sign_in_failed', portalOrigin).href,
+      Location: new URL('/?error=sign_in_failed', portalOrigin).href,
       'Set-Cookie': cookie(attemptCookie, '', 0),
     },
   })
@@ -45,7 +47,7 @@ export function createIdentity(env: NodeJS.ProcessEnv, portalOrigin: string): Id
   )
 
   return {
-    async login() {
+    async login(request) {
       const authorizationServer = await config()
       const attempt = randomToken()
       const state = randomToken()
@@ -59,13 +61,14 @@ export function createIdentity(env: NodeJS.ProcessEnv, portalOrigin: string): Id
         response_mode: 'query',
         redirect_uri: callbackUrl,
         scope: 'openid profile email',
-        idp: OKTA_GOOGLE_IDP_ID,
         code_challenge: await oidc.calculatePKCECodeChallenge(verifier),
         code_challenge_method: 'S256',
         state,
         nonce,
       }
       for (const [name, value] of Object.entries(parameters)) authorizationUrl.searchParams.set(name, value)
+      const signUp = new URL(request.url).searchParams.get('intent') === 'signup'
+      if (signUp || !adminSignInEnabled) authorizationUrl.searchParams.set('idp', OKTA_GOOGLE_IDP_ID)
       await db.insert(loginAttempts).values({
         digest: digest(attempt), state, nonce, verifier, expiresAt: nowSeconds() + loginLifetime,
       })
@@ -121,7 +124,8 @@ export function createIdentity(env: NodeJS.ProcessEnv, portalOrigin: string): Id
         lastName: typeof claims.family_name === 'string' ? claims.family_name.slice(0, 150) : '',
       }).onDuplicateKeyUpdate({ set: { identityKey: sql`identity_key` } })
       const [account] = await db.select().from(accounts).where(eq(accounts.identityKey, identityKey)).limit(1)
-      if (!account || account.status !== 'active' || account.role !== 'customer') return failedLogin()
+      const destination = account && portalDestination(account, adminSignInEnabled)
+      if (!destination) return failedLogin()
 
       const token = randomToken()
       const previous = readCookie(request, sessionCookie)
@@ -131,7 +135,7 @@ export function createIdentity(env: NodeJS.ProcessEnv, portalOrigin: string): Id
         digest: digest(token), accountId: account.id, csrfToken: randomToken(),
         createdAt: issuedAt, expiresAt: issuedAt + sessionLifetime, idleUntil: issuedAt + idleLifetime,
       })
-      const headers = new Headers({ Location: new URL('/', portalOrigin).href })
+      const headers = new Headers({ Location: new URL(destination, portalOrigin).href })
       headers.append('Set-Cookie', cookie(attemptCookie, '', 0))
       headers.append('Set-Cookie', cookie(sessionCookie, token, sessionLifetime))
       return new Response(null, { status: 303, headers })
@@ -142,10 +146,13 @@ export function createIdentity(env: NodeJS.ProcessEnv, portalOrigin: string): Id
       const filter = activeSession(token, now)
       const [row] = await db.select().from(sessions)
         .innerJoin(accounts, eq(sessions.accountId, accounts.id)).where(filter).limit(1)
-      if (!row || row.accounts.status !== 'active') return
+      if (!row) return
+      const destination = portalDestination(row.accounts, adminSignInEnabled)
+      if (!destination) return
       await db.update(sessions).set({ idleUntil: sql`greatest(${sessions.idleUntil}, ${now + idleLifetime})` }).where(filter)
       const { publicId, role, plan, firstName, lastName, email } = row.accounts
       return {
+        destination,
         actor: { publicId, role, firstName, lastName, email },
         effectiveCustomer: { publicId, plan },
         csrfToken: row.sessions.csrfToken,

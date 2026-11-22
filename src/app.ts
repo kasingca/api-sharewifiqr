@@ -8,7 +8,7 @@ const plans = [
 ].map(plan => ({ ...plan, currency: 'USD' }))
 
 export type Identity = {
-  login: () => Promise<Response>
+  login: (request: Request) => Promise<Response>
   callback: (request: Request) => Promise<Response>
   me: (token: string) => Promise<object | undefined>
   logout: (token: string, csrfToken: string) => Promise<boolean>
@@ -64,7 +64,7 @@ export function createApi(portalOrigin: string, identity?: Identity) {
       if (pathname === '/v1/plans') return Response.json({ plans }, { headers })
       if (pathname === '/v1/auth/login' || pathname === '/v1/auth/callback') {
         if (!identity) return error(503, 'auth_unavailable', 'Sign-in is temporarily unavailable.')
-        const response = pathname.endsWith('/login') ? await identity.login() : await identity.callback(request)
+        const response = pathname.endsWith('/login') ? await identity.login(request) : await identity.callback(request)
         for (const [key, value] of headers) response.headers.set(key, value)
         return response
       }

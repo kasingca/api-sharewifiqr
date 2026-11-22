@@ -51,7 +51,16 @@ curl -i https://api.sharewifiqr.com/health
 curl -i https://api.sharewifiqr.com/v1/plans
 ```
 
-5. Point the portal's sign-in button at `https://api.sharewifiqr.com/v1/auth/login` using a top-level navigation. After Google sign-in, confirm the browser returns to the portal with a host-only `__Host-sharewifiqr_session` cookie on the API host. The API defaults to a 30-minute idle timeout and a 12-hour absolute lifetime.
+5. Point the portal's sign-in button at `https://api.sharewifiqr.com/v1/auth/login` using a top-level navigation. After Google sign-in, confirm the browser returns to `/customer` with a host-only `__Host-sharewifiqr_session` cookie on the API host. The API defaults to a 30-minute idle timeout and a 12-hour absolute lifetime.
 6. From the portal browser, call `GET /v1/me` with `credentials: 'include'`. Confirm the customer is on Free. Send `DELETE /v1/session` with the same credentials setting and the returned CSRF token in `X-CSRF-Token`. Confirm the next `GET /v1/me` returns 401. Repeat sign-in on a paired HTTPS staging portal and API before production.
 
 [Deploy Vercel Functions](https://vercel.com/docs/functions) · [Vercel custom domains](https://vercel.com/docs/domains/working-with-domains/add-a-domain)
+
+
+## Portal and personas
+
+Set `PORTAL_ORIGIN` on the API project to the exact origin of the separately deployed portal. The portal links to `/v1/auth/login` for log-in and `/v1/auth/login?intent=signup` for sign-up on the paired API. The API redirects successful sign-ins to `/customer` or `/admin` and returns the same path as `destination` in the authenticated `/v1/me` response.
+
+**Sign up** sends users to Google through Okta with just-in-time customer provisioning. **Log in** uses the same Google flow by default. With `OKTA_ADMIN_SIGN_IN_ENABLED=true`, **Log in** uses the Okta app's sign-in and identity-provider routing policies so staff can use their assigned identity provider. Configure routing and require MFA for the staff group on this OIDC app before enabling the setting. Test the staff policy through both portal links to confirm Google sign-up cannot authenticate a staff identity without the required policy.
+
+Assign the admin role only to separately provisioned staff accounts by their verified Okta issuer and subject. Revoke all sessions for the affected account before changing its role, using a maintenance window or pausing the account while applying the change. New accounts receive the customer role. Verify that a new customer lands on `/customer`, a provisioned staff member lands on `/admin`, a cross-persona visit returns to the signed-in user's destination, and a signed-out visit to either page returns to the homepage.
