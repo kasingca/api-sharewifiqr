@@ -1,0 +1,25 @@
+{
+  "name": "sharewifiqr-api",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "dependencies": {
+    "@tidbcloud/serverless": "0.3.0",
+    "drizzle-orm": "0.45.4",
+    "oauth4webapi": "3.8.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "drizzle-kit": "0.31.11",
+    "mysql2": "^3.0.0",
+    "typescript": "5.9.3"
+  }
+}
