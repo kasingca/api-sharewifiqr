@@ -30,6 +30,15 @@ Drizzle schema changes belong in `src/db/schema.ts`. Run `npm run db:generate`, 
 
 [TiDB Cloud connection setup](https://docs.pingcap.com/tidbcloud/connect-to-tidb-cluster-serverless/) · [TiDB HTTP driver](https://docs.pingcap.com/tidbcloud/serverless-driver-config/) · [Drizzle TiDB setup](https://orm.drizzle.team/docs/mysql/connect-tidb)
 
+## Local development
+
+Run `npm run dev` with Node.js 22 to start the API at `http://localhost:3030`. The server loads `.env.local` if present. You can check the root and health endpoints without Okta or TiDB credentials.
+
+```sh
+curl -i http://localhost:3030/
+curl -i http://localhost:3030/health
+```
+
 ## Vercel and validation
 
 1. Import this repository as a dedicated Vercel project with the **Other** framework preset and Node.js 22. If deploying from this directory with the CLI, run `npx vercel login` and `npx vercel link` first.

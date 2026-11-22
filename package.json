@@ -6,6 +6,7 @@
     "node": "22.x"
   },
   "scripts": {
+    "dev": "node --disable-warning=ExperimentalWarning --experimental-strip-types --env-file-if-exists=.env.local src/dev.ts",
     "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",

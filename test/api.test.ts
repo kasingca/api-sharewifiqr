@@ -7,6 +7,18 @@ const handle = createApi(portal)
 const request = (path: string, init?: RequestInit) =>
   handle(new Request('https://api.sharewifiqr.com' + path, init))
 
+test('the home root returns an authentication error', async () => {
+  const response = await request('/')
+  assert.equal(response.status, 401)
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: 'unauthenticated',
+      message: 'Sorry, this request is not authenticated.',
+      requestId: response.headers.get('x-request-id'),
+    },
+  })
+})
+
 test('health is public and uncached', async () => {
   const response = await request('/health')
   assert.equal(response.status, 200)

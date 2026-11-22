@@ -40,6 +40,7 @@ export function createApi(portalOrigin: string, identity?: Identity) {
     const error = (status: number, code: string, message: string) =>
       Response.json({ error: { code, message, requestId } }, { status, headers })
 
+    if (pathname === '/') return error(401, 'unauthenticated', 'Sorry, this request is not authenticated.')
     const method = methods.get(pathname)
     if (!method) return error(404, 'not_found', 'Resource not found.')
     if (request.method === 'OPTIONS' && cors) {
