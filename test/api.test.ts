@@ -67,6 +67,7 @@ test('sign-out requires the portal origin and session-bound CSRF token', async (
     login: async () => new Response(null, { status: 303 }),
     callback: async () => new Response(null, { status: 303 }),
     me: async value => signedIn && value === token ? { csrfToken } : undefined,
+    updateProfile: async () => 'unauthenticated',
     logout: async (value, csrf) => {
       if (value !== token || csrf !== csrfToken) return false
       signedIn = false
@@ -85,4 +86,47 @@ test('sign-out requires the portal origin and session-bound CSRF token', async (
   assert.equal(response.status, 204)
   assert.match(response.headers.get('set-cookie') ?? '', /Max-Age=0/)
   assert.equal((await handle(new Request(url + '/v1/me', { headers: { cookie } }))).status, 401)
+})
+
+test('profile reads and updates require a session and updates accept only names', async () => {
+  const token = 'a'.repeat(43)
+  const csrf = 'b'.repeat(43)
+  let actor = { firstName: 'Avery', lastName: 'Chen', email: 'avery@example.com' }
+  const api = createApi(portal, {
+    login: async () => new Response(null, { status: 303 }),
+    callback: async () => new Response(null, { status: 303 }),
+    me: async value => value === token ? { actor, csrfToken: csrf } : undefined,
+    logout: async () => false,
+    updateProfile: async (value, suppliedCsrf, names) => {
+      if (value !== token) return 'unauthenticated'
+      if (suppliedCsrf !== csrf) return 'csrf_denied'
+      actor = { ...actor, ...names }
+      return 'updated'
+    },
+  })
+  const url = 'https://api.sharewifiqr.com/v1/me'
+  const cookie = '__Host-sharewifiqr_session=' + token
+  const patch = (body: object, headers: Record<string, string> = {}) => api(new Request(url, {
+    method: 'PATCH',
+    headers: { origin: portal, cookie, 'content-type': 'application/json', 'x-csrf-token': csrf, ...headers },
+    body: JSON.stringify(body),
+  }))
+  const preflight = await api(new Request(url, { method: 'OPTIONS', headers: {
+    origin: portal, 'access-control-request-method': 'PATCH',
+    'access-control-request-headers': 'content-type,x-csrf-token',
+  } }))
+  assert.equal(preflight.status, 204)
+  assert.equal(preflight.headers.get('access-control-allow-headers'), 'Content-Type, X-CSRF-Token')
+  assert.equal((await patch({ firstName: 'Sam' }, { cookie: '' })).status, 401)
+  assert.equal((await patch({ firstName: 'Sam' }, { cookie: '__Host-sharewifiqr_session=' + 'c'.repeat(43) })).status, 401)
+  assert.equal((await patch({ firstName: 'Sam' }, { origin: 'https://example.com' })).status, 403)
+  assert.equal((await patch({ firstName: 'Sam' }, { 'x-csrf-token': 'wrong' })).status, 403)
+  assert.equal((await patch({ firstName: 'Sam', role: 'admin' })).status, 400)
+  assert.equal((await patch({ firstName: ' '.repeat(5) })).status, 400)
+  assert.equal((await patch({ lastName: 'x'.repeat(151) })).status, 400)
+  assert.equal((await patch({ firstName: '  Sam  ' })).status, 204)
+  const read = await api(new Request(url, { headers: { cookie, origin: portal } }))
+  assert.equal(read.headers.get('cache-control'), 'no-store')
+  assert.deepEqual((await read.json()).actor, { firstName: 'Sam', lastName: 'Chen', email: 'avery@example.com' })
+  assert.equal((await api(new Request(url))).status, 401)
 })

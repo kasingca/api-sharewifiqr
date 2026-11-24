@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer'
 import { createServer } from 'node:http'
+import { Readable } from 'node:stream'
 import { endpoint } from './entry.ts'
 
 const hostname = 'localhost'
@@ -13,7 +14,12 @@ createServer(async (incoming, outgoing) => {
     for (let index = 0; index < incoming.rawHeaders.length; index += 2) {
       headers.append(incoming.rawHeaders[index], incoming.rawHeaders[index + 1])
     }
-    const request = new Request(origin + (incoming.url ?? '/'), { method: incoming.method, headers })
+    const init: RequestInit & { duplex?: 'half' } = { method: incoming.method, headers }
+    if (incoming.method !== 'GET' && incoming.method !== 'HEAD') {
+      init.body = Readable.toWeb(incoming) as ReadableStream
+      init.duplex = 'half'
+    }
+    const request = new Request(origin + (incoming.url ?? '/'), init)
     const response = await api.fetch(request)
     const body = Buffer.from(await response.arrayBuffer())
     for (const [name, value] of response.headers) {

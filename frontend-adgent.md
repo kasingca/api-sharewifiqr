@@ -45,11 +45,14 @@ The API supplies the destination. Use `actor.role` for display or navigation aft
 | Method and path | Frontend use |
 | --- | --- |
 | `GET /v1/me` | Read the current session with `credentials: 'include'`. |
+| `PATCH /v1/me` | Update the signed-in account's first name, last name, or both. |
 | `DELETE /v1/session` | Sign out with `credentials: 'include'` and `X-CSRF-Token` set to the token from `/v1/me`. |
 | `GET /v1/plans` | Read the public plan catalog. Prices are monthly USD cents. |
 | `GET /health` | Check API availability from deployment tooling. |
 
 `GET /v1/me` returns `destination`, `actor` (`publicId`, `role`, `firstName`, `lastName`, `email`), `effectiveCustomer` (`publicId`, `plan`), and `csrfToken`. Use `actor` for the signed-in identity. The current API returns the same account in `effectiveCustomer` and has no customer-switching endpoint.
+
+For profile edits, send JSON with `firstName`, `lastName`, or both. Send `credentials: 'include'`, `Content-Type: application/json`, and `X-CSRF-Token` from the current session response. Names are trimmed and must contain 1–150 characters. The API takes the account from the session and accepts only the two name fields. After a `204` response, refresh `GET /v1/me` to show the saved names. A `400` indicates invalid profile input, a `401` indicates the session is unavailable, and a `403` indicates a rejected origin or CSRF token.
 
 After sign-out returns `204`, clear frontend session state and replace the current route with `/`. On `401`, clear session state and return to `/` as well. On other failures, show an error and allow retry. API error responses use `{ error: { code, message, requestId } }`.
 

@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { connect } from '@tidbcloud/serverless'
-import { and, eq, gt, sql } from 'drizzle-orm'
+import { and, eq, exists, gt, sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/tidb-serverless'
 import * as oidc from 'oauth4webapi'
 import { readCookie, sessionCookie, type Identity } from './app.ts'
@@ -16,6 +16,10 @@ const digest = (value: string) => createHash('sha256').update(value).digest('hex
 const nowSeconds = () => Math.floor(Date.now() / 1000)
 const cookie = (name: string, value: string, lifetime: number) =>
   `${name}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${lifetime}`
+
+const validCsrf = (supplied: string, expected: string) =>
+  /^[A-Za-z0-9_-]{43}$/.test(supplied) &&
+  timingSafeEqual(Buffer.from(expected), Buffer.from(supplied))
 
 export function createIdentity(env: NodeJS.ProcessEnv, portalOrigin: string): Identity | undefined {
   const { TIDB_URL, API_ORIGIN, OKTA_ISSUER, OKTA_CLIENT_ID, OKTA_CLIENT_SECRET, OKTA_GOOGLE_IDP_ID } = env
@@ -159,11 +163,35 @@ export function createIdentity(env: NodeJS.ProcessEnv, portalOrigin: string): Id
       }
     },
 
+    async updateProfile(token, csrfToken, names) {
+      const [row] = await db.select().from(sessions)
+        .innerJoin(accounts, eq(sessions.accountId, accounts.id))
+        .where(activeSession(token, nowSeconds())).limit(1)
+      if (!row || !portalDestination(row.accounts, adminSignInEnabled)) return 'unauthenticated'
+      if (!validCsrf(csrfToken, row.sessions.csrfToken)) return 'csrf_denied'
+
+      const permitted = and(
+        eq(accounts.id, row.accounts.id),
+        eq(accounts.status, 'active'),
+        adminSignInEnabled ? undefined : eq(accounts.role, 'customer'),
+        exists(db.select({ digest: sessions.digest }).from(sessions).where(and(
+          activeSession(token, nowSeconds()),
+          eq(sessions.accountId, row.accounts.id),
+          eq(sessions.csrfToken, row.sessions.csrfToken),
+        ))),
+      )
+      const result = await db.update(accounts).set(names).where(permitted)
+      if (!result.rowsAffected) {
+        const [account] = await db.select({ id: accounts.id }).from(accounts).where(permitted).limit(1)
+        if (!account) return 'unauthenticated'
+      }
+      return 'updated'
+    },
+
     async logout(token, csrfToken) {
       const filter = activeSession(token, nowSeconds())
       const [row] = await db.select({ expected: sessions.csrfToken }).from(sessions).where(filter).limit(1)
-      if (!row || !/^[A-Za-z0-9_-]{43}$/.test(csrfToken) ||
-          !timingSafeEqual(Buffer.from(row.expected), Buffer.from(csrfToken))) return false
+      if (!row || !validCsrf(csrfToken, row.expected)) return false
       await db.delete(sessions).where(filter)
       return true
     },
