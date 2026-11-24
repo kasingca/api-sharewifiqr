@@ -3,9 +3,9 @@ import { connect } from '@tidbcloud/serverless'
 import { and, eq, exists, gt, sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/tidb-serverless'
 import * as oidc from 'oauth4webapi'
-import { readCookie, sessionCookie, type Identity } from './app.ts'
+import { readCookie, sessionCookie, type Identity, type PaymentProvider } from './app.ts'
 import { portalDestination } from './persona.ts'
-import { accounts, loginAttempts, sessions } from './db/schema.ts'
+import { accounts, loginAttempts, paymentMethods, sessions } from './db/schema.ts'
 
 const attemptCookie = '__Host-sharewifiqr_login'
 const loginLifetime = 600
@@ -49,6 +49,26 @@ export function createIdentity(env: NodeJS.ProcessEnv, portalOrigin: string): Id
   const activeSession = (token: string, now: number) => and(
     eq(sessions.digest, digest(token)), gt(sessions.expiresAt, now), gt(sessions.idleUntil, now),
   )
+  const sessionAccount = async (token: string) => {
+    const [row] = await db.select().from(sessions)
+      .innerJoin(accounts, eq(sessions.accountId, accounts.id))
+      .where(activeSession(token, nowSeconds())).limit(1)
+    return row && portalDestination(row.accounts, adminSignInEnabled) ? row : undefined
+  }
+  // Re-checks the session inside the write so a sign-out between read and write cannot slip through.
+  const sessionStillActive = (token: string, row: NonNullable<Awaited<ReturnType<typeof sessionAccount>>>) =>
+    exists(db.select({ digest: sessions.digest }).from(sessions).where(and(
+      activeSession(token, nowSeconds()),
+      eq(sessions.accountId, row.accounts.id),
+      eq(sessions.csrfToken, row.sessions.csrfToken),
+    )))
+  // Payment methods belong to customer accounts; anyone else sees the resource as missing.
+  const ownsCustomer = (account: typeof accounts.$inferSelect, customerId: string) =>
+    account.role === 'customer' && account.publicId === customerId
+  const readPaymentMethod = async (accountId: string) => {
+    const [method] = await db.select().from(paymentMethods).where(eq(paymentMethods.accountId, accountId)).limit(1)
+    return method ? { provider: method.provider, updatedAt: method.updatedAt.toISOString() } : null
+  }
 
   return {
     async login(request) {
@@ -164,21 +184,15 @@ export function createIdentity(env: NodeJS.ProcessEnv, portalOrigin: string): Id
     },
 
     async updateProfile(token, csrfToken, names) {
-      const [row] = await db.select().from(sessions)
-        .innerJoin(accounts, eq(sessions.accountId, accounts.id))
-        .where(activeSession(token, nowSeconds())).limit(1)
-      if (!row || !portalDestination(row.accounts, adminSignInEnabled)) return 'unauthenticated'
+      const row = await sessionAccount(token)
+      if (!row) return 'unauthenticated'
       if (!validCsrf(csrfToken, row.sessions.csrfToken)) return 'csrf_denied'
 
       const permitted = and(
         eq(accounts.id, row.accounts.id),
         eq(accounts.status, 'active'),
         adminSignInEnabled ? undefined : eq(accounts.role, 'customer'),
-        exists(db.select({ digest: sessions.digest }).from(sessions).where(and(
-          activeSession(token, nowSeconds()),
-          eq(sessions.accountId, row.accounts.id),
-          eq(sessions.csrfToken, row.sessions.csrfToken),
-        ))),
+        sessionStillActive(token, row),
       )
       const result = await db.update(accounts).set(names).where(permitted)
       if (!result.rowsAffected) {
@@ -186,6 +200,36 @@ export function createIdentity(env: NodeJS.ProcessEnv, portalOrigin: string): Id
         if (!account) return 'unauthenticated'
       }
       return 'updated'
+    },
+
+    async getPaymentMethod(token, customerId) {
+      const row = await sessionAccount(token)
+      if (!row) return 'unauthenticated'
+      if (!ownsCustomer(row.accounts, customerId)) return 'not_found'
+      return { paymentMethod: await readPaymentMethod(row.accounts.id) }
+    },
+
+    async setPaymentMethod(token, csrfToken, customerId, provider) {
+      const row = await sessionAccount(token)
+      if (!row) return 'unauthenticated'
+      if (!validCsrf(csrfToken, row.sessions.csrfToken)) return 'csrf_denied'
+      if (!ownsCustomer(row.accounts, customerId)) return 'not_found'
+
+      const permitted = and(
+        eq(accounts.id, row.accounts.id),
+        eq(accounts.publicId, customerId),
+        eq(accounts.role, 'customer'),
+        eq(accounts.status, 'active'),
+        sessionStillActive(token, row),
+      )
+      await db.insert(paymentMethods).select(db.select({
+        accountId: accounts.id,
+        provider: sql<PaymentProvider>`${provider}`.as('provider'),
+        updatedAt: sql<Date>`now()`.as('updated_at'),
+      }).from(accounts).where(permitted)).onDuplicateKeyUpdate({ set: { provider } })
+      const paymentMethod = await readPaymentMethod(row.accounts.id)
+      if (!paymentMethod || paymentMethod.provider !== provider) return 'unauthenticated'
+      return { paymentMethod }
     },
 
     async logout(token, csrfToken) {

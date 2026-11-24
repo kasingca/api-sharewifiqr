@@ -46,17 +46,48 @@ The API supplies the destination. Use `actor.role` for display or navigation aft
 | --- | --- |
 | `GET /v1/me` | Read the current session with `credentials: 'include'`. |
 | `PATCH /v1/me` | Update the signed-in account's first name, last name, or both. |
+| `GET /v1/customers/{customerId}/payment-method` | Read the customer's saved payment method. |
+| `PUT /v1/customers/{customerId}/payment-method` | Save the customer's payment method choice (`stripe` or `paypal`). |
 | `DELETE /v1/session` | Sign out with `credentials: 'include'` and `X-CSRF-Token` set to the token from `/v1/me`. |
 | `GET /v1/plans` | Read the public plan catalog. Prices are monthly USD cents. |
 | `GET /health` | Check API availability from deployment tooling. |
 
 `GET /v1/me` returns `destination`, `actor` (`publicId`, `role`, `firstName`, `lastName`, `email`), `effectiveCustomer` (`publicId`, `plan`), and `csrfToken`. Use `actor` for the signed-in identity. The current API returns the same account in `effectiveCustomer` and has no customer-switching endpoint.
 
-For profile edits, send JSON with `firstName`, `lastName`, or both. Send `credentials: 'include'`, `Content-Type: application/json`, and `X-CSRF-Token` from the current session response. Names are trimmed and must contain 1–150 characters. The API takes the account from the session and accepts only the two name fields. After a `204` response, refresh `GET /v1/me` to show the saved names. A `400` indicates invalid profile input, a `401` indicates the session is unavailable, and a `403` indicates a rejected origin or CSRF token.
+For profile edits, send JSON with `firstName`, `lastName`, or both. Send `credentials: 'include'`, `Content-Type: application/json`, and `X-CSRF-Token` from the current session response. Names are trimmed and must contain 1–150 characters. The API takes the account from the session and accepts only the two name fields. After a `204` response, refresh `GET /v1/me` to show the saved names. A `400` indicates invalid profile input, a `401` indicates the session is unavailable, and a `403` indicates a rejected origin or CSRF token. The API does not accept email changes. Show the email from `actor.email` as read-only.
+
+### Payment method
+
+Customers have one payment method. Only show this section to customers (`actor.role === 'customer'`). Use `effectiveCustomer.publicId` from `GET /v1/me` as `{customerId}`. The API returns `404` when the session's account doesn't own that customer ID, which includes administrators.
+
+Read it when the profile page loads.
+
+```js
+const url = new URL(`/v1/customers/${session.effectiveCustomer.publicId}/payment-method`, apiOrigin);
+const response = await fetch(url, { credentials: 'include', cache: 'no-store' });
+const { paymentMethod } = await response.json();
+```
+
+`paymentMethod` is `null` until the customer saves a choice. Otherwise it is `{ provider, updatedAt }`, where `provider` is `"stripe"` or `"paypal"` and `updatedAt` is an ISO 8601 UTC timestamp. When the value is `null`, select neither radio option and keep the save button disabled until the customer picks one.
+
+To save, replace the whole resource with `PUT`.
+
+```js
+const response = await fetch(url, {
+  method: 'PUT',
+  credentials: 'include',
+  headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': session.csrfToken },
+  body: JSON.stringify({ provider: 'paypal' }),
+});
+```
+
+The body must contain exactly one field, `provider`, set to `"stripe"` or `"paypal"`. A `200` response returns the saved `{ paymentMethod }`. Use it to update the page without another request. A `400` (`invalid_payment_method`) indicates a bad body, a `401` indicates the session is unavailable, a `403` indicates a rejected origin or CSRF token, and a `404` indicates the customer ID isn't the signed-in customer's. Sending the same provider again is safe.
+
+This stores the customer's preference only. It doesn't collect card or PayPal details or charge anything. Never send card numbers or account credentials to this endpoint. Stripe and PayPal checkout will use their hosted pages in a later phase. Replace any "saved in this browser" demo copy and remove local storage of the choice.
 
 After sign-out returns `204`, clear frontend session state and replace the current route with `/`. On `401`, clear session state and return to `/` as well. On other failures, show an error and allow retry. API error responses use `{ error: { code, message, requestId } }`.
 
-Check the backend contract before wiring any feature that needs a new endpoint. The persona redirects do not provide admin management, billing, or QR-code APIs.
+Check the backend contract before wiring any feature that needs a new endpoint. The persona redirects do not provide admin management, checkout, billing history, or QR-code APIs.
 
 ## Environment and acceptance checks
 

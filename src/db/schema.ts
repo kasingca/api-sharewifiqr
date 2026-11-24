@@ -31,3 +31,11 @@ export const loginAttempts = mysqlTable('login_attempts', {
   verifier: char('verifier', { length: 43 }).notNull(),
   expiresAt: int('expires_at').notNull(),
 }, table => [index('login_attempts_expiry_idx').on(table.expiresAt)])
+
+export const paymentProviders = ['stripe', 'paypal'] as const
+
+export const paymentMethods = mysqlTable('payment_methods', {
+  accountId: char('account_id', { length: 36 }).primaryKey().references(() => accounts.id),
+  provider: mysqlEnum('provider', paymentProviders).notNull(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+})

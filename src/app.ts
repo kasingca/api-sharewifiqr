@@ -8,6 +8,9 @@ const plans = [
 ].map(plan => ({ ...plan, currency: 'USD' }))
 
 export type ProfileNames = Partial<{ firstName: string; lastName: string }>
+export type PaymentProvider = 'stripe' | 'paypal'
+export type PaymentMethod = { provider: PaymentProvider; updatedAt: string } | null
+type PaymentMethodRead = { paymentMethod: PaymentMethod } | 'unauthenticated' | 'not_found'
 
 export type Identity = {
   login: (request: Request) => Promise<Response>
@@ -15,6 +18,9 @@ export type Identity = {
   me: (token: string) => Promise<object | undefined>
   updateProfile: (token: string, csrfToken: string, names: ProfileNames) =>
     Promise<'updated' | 'unauthenticated' | 'csrf_denied'>
+  getPaymentMethod: (token: string, customerId: string) => Promise<PaymentMethodRead>
+  setPaymentMethod: (token: string, csrfToken: string, customerId: string, provider: PaymentProvider) =>
+    Promise<PaymentMethodRead | 'csrf_denied'>
   logout: (token: string, csrfToken: string) => Promise<boolean>
 }
 
@@ -24,15 +30,34 @@ export function readCookie(request: Request, name: string) {
   return matches.length === 1 ? matches[0].slice(name.length + 1) : undefined
 }
 
+const paymentMethodRoute = '/v1/customers/{customerId}/payment-method'
 const methods = new Map([
   ['/health', ['GET']], ['/v1/plans', ['GET']], ['/v1/me', ['GET', 'PATCH']],
   ['/v1/session', ['DELETE']], ['/v1/auth/login', ['GET']], ['/v1/auth/callback', ['GET']],
+  [paymentMethodRoute, ['GET', 'PUT']],
 ])
+const credentialedRoutes = ['/v1/plans', '/v1/me', '/v1/session', paymentMethodRoute]
 
-async function readProfileNames(request: Request): Promise<ProfileNames | undefined> {
+function matchRoute(pathname: string) {
+  const customer = /^\/v1\/customers\/([0-9a-f]{32})\/payment-method$/.exec(pathname)
+  return customer ? { route: paymentMethodRoute, customerId: customer[1] } : { route: pathname }
+}
+
+async function readJsonObject(request: Request) {
   if (request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') return
   const body: unknown = await request.json().catch(() => undefined)
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return
+  if (body && typeof body === 'object' && !Array.isArray(body)) return body as Record<string, unknown>
+}
+
+async function readPaymentProvider(request: Request): Promise<PaymentProvider | undefined> {
+  const body = await readJsonObject(request)
+  if (!body || Object.keys(body).length !== 1) return
+  if (body.provider === 'stripe' || body.provider === 'paypal') return body.provider
+}
+
+async function readProfileNames(request: Request): Promise<ProfileNames | undefined> {
+  const body = await readJsonObject(request)
+  if (!body) return
   const entries = Object.entries(body)
   if (!entries.length) return
   const names: ProfileNames = {}
@@ -46,9 +71,10 @@ async function readProfileNames(request: Request): Promise<ProfileNames | undefi
 }
 
 export function createApi(portalOrigin: string, identity?: Identity) {
-  return async (request: Request, pathname = new URL(request.url).pathname) => {
+  return async (request: Request, path = new URL(request.url).pathname) => {
     const requestId = randomUUID()
-    const cors = ['/v1/plans', '/v1/me', '/v1/session'].includes(pathname)
+    const { route: pathname, customerId } = matchRoute(path)
+    const cors = credentialedRoutes.includes(pathname)
     const origin = request.headers.get('origin')
     const allowedOrigin = origin === portalOrigin
     const headers = new Headers({ 'Cache-Control': 'no-store', 'X-Request-Id': requestId })
@@ -65,7 +91,7 @@ export function createApi(portalOrigin: string, identity?: Identity) {
     if (!supportedMethods) return error(404, 'not_found', 'Resource not found.')
     if (request.method === 'OPTIONS' && cors) {
       const method = request.headers.get('access-control-request-method') ?? ''
-      const allowedHeaders = method === 'PATCH' ? ['Content-Type', 'X-CSRF-Token']
+      const allowedHeaders = method === 'PATCH' || method === 'PUT' ? ['Content-Type', 'X-CSRF-Token']
         : method === 'DELETE' ? ['X-CSRF-Token'] : []
       const requestedHeaders = (request.headers.get('access-control-request-headers') ?? '')
         .toLowerCase().split(',').map(header => header.trim()).filter(Boolean)
@@ -92,15 +118,28 @@ export function createApi(portalOrigin: string, identity?: Identity) {
         for (const [key, value] of headers) response.headers.set(key, value)
         return response
       }
-      if ((method === 'DELETE' || method === 'PATCH') && !allowedOrigin) return error(403, 'origin_denied', 'Origin is not allowed.')
+      if (method !== 'GET' && !allowedOrigin) return error(403, 'origin_denied', 'Origin is not allowed.')
       const token = readCookie(request, sessionCookie)
       if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return error(401, 'unauthenticated', 'Sign in to continue.')
       if (!identity) return error(503, 'auth_unavailable', 'Sign-in is temporarily unavailable.')
+      const csrf = request.headers.get('x-csrf-token') ?? ''
+      if (customerId) {
+        let result
+        if (method === 'GET') result = await identity.getPaymentMethod(token, customerId)
+        else {
+          const provider = await readPaymentProvider(request)
+          if (!provider) return error(400, 'invalid_payment_method', 'Send provider as "stripe" or "paypal".')
+          result = await identity.setPaymentMethod(token, csrf, customerId, provider)
+        }
+        if (result === 'unauthenticated') return error(401, result, 'Sign in to continue.')
+        if (result === 'csrf_denied') return error(403, result, 'Session validation failed.')
+        if (result === 'not_found') return error(404, result, 'Resource not found.')
+        return Response.json(result, { headers })
+      }
       if (method === 'GET') {
         const actor = await identity.me(token)
         return actor ? Response.json(actor, { headers }) : error(401, 'unauthenticated', 'Sign in to continue.')
       }
-      const csrf = request.headers.get('x-csrf-token') ?? ''
       if (method === 'PATCH') {
         const names = await readProfileNames(request)
         if (!names) return error(400, 'invalid_profile', 'Send firstName or lastName as nonempty strings of up to 150 characters.')

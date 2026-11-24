@@ -7,6 +7,7 @@
     { "source": "/v1/plans", "destination": "/api/plans" },
     { "source": "/v1/me", "destination": "/api/me" },
     { "source": "/v1/session", "destination": "/api/session" },
+    { "source": "/v1/customers/:customerId/payment-method", "destination": "/api/payment-method?customerId=:customerId" },
     { "source": "/v1/auth/login", "destination": "/api/login" },
     { "source": "/v1/auth/callback", "destination": "/api/callback" }
   ]
